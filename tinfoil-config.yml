@@ -25,23 +25,6 @@ networks:
       - ac-cdskmit-shard-00-02.0mvrm0i.mongodb.net
       # Google Gemini Interactions API (@google/genai control plane)
       - generativelanguage.googleapis.com
-      # Tinfoil attestation, confidential router, and verifier proxy endpoints
-      - atc.tinfoil.sh
-      - router-0.tinfoil.sh
-      - inference.tinfoil.sh
-      - api.tinfoil.sh
-      - github-proxy.tinfoil.sh
-      - kds-proxy.tinfoil.sh
-      # Sigstore Rekor, Fulcio, TSA, GitHub release assets, and AMD KDS
-      - rekor.sigstore.dev
-      - log2025-1.rekor.sigstore.dev
-      - fulcio.sigstore.dev
-      - timestamp.sigstore.dev
-      - api.github.com
-      - github.com
-      - objects.githubusercontent.com
-      - release-assets.githubusercontent.com
-      - kdsintf.amd.com
 
 containers:
   - name: "deroute-core"
@@ -55,10 +38,11 @@ containers:
       - PORT: "8080"
       - HOST: "0.0.0.0"
       - MONGODB_DB: "drouter"
+      - CORE_KEY_SOURCE: "tinfoil"
     secrets:
       - MONGODB_URI
       - GEMINI_API_KEY
-      - TINFOIL_API_KEY
+      - CORE_OPERATOR_TOKEN
     keys:
       - egress-signing
       - tree-signing
@@ -71,7 +55,6 @@ shim:
     - /health
     - /knowledge/corpus
     - /agent/plan
-    - /transparency/sign-tree-head
     - /keys
   origins:
     - https://drouter-demo.vercel.app

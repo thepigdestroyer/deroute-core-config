@@ -9,46 +9,38 @@ Every release in this repository is measured by Tinfoil's GitHub Actions workflo
 The `tinfoil-config.yml` file in this repository declares a single stateless container (`deroute-core`) running on an attested Confidential VM (`cvm-version: 0.14.7`, 2 vCPUs, 8192 MB RAM) with a read-only root filesystem (`read_only: true`, `/tmp` tmpfs only):
 
 1. **Whole-library knowledge retrieval (`GET /knowledge/corpus`)**: Returns the entire public confidential-computing knowledge base (`drouter.enclave_intelligence`) with 768-dimensional embeddings and a canonical SHA-256 digest (`contentSha256`). Accepts zero query parameters so MongoDB Atlas never learns what any user is looking for.
-2. **Content-free Gemini control-plane planner (`POST /agent/plan`)**: Accepts only a bucketed `TaskDescriptor` (`taskKind`, `$INPUT` handle, power-of-two `inputTokenEstimate`, `redactionCounts` capped at 5 per category, boolean `verification` flags, and `allowedTools`). Enforces the `assertContentFree` egress firewall on every outbound request to `generativelanguage.googleapis.com` and signs a canonical egress receipt (`{ sha256, epochHourSec, kind: "gemini-egress" }`) with the enclave-generated `egress-signing` Ed25519 key.
-3. **Transparency log tree-head signer (`POST /transparency/sign-tree-head`)**: Signs well-formed RFC 6962 Merkle tree heads (`drouter/transparency/sth/v1`) with the enclave-generated `tree-signing` Ed25519 key.
-4. **Attested public key discovery (`GET /keys` and `GET /health`)**: Exposes the raw 32-byte hex and 44-byte RFC 8410 SPKI DER hex public keys for `egress-signing` and `tree-signing` so clients can cross-check them against the enclave attestation document's `crypto_material` entries (`https://tinfoil.sh/key/spki/v1`).
+2. **Content-free Gemini control-plane planner (`POST /agent/plan`)**: Accepts only a bucketed `TaskDescriptor` (`taskKind`, `$INPUT` handle, power-of-two `inputTokenEstimate`, `redactionCounts` capped at 5 per category, boolean `verification` flags, and `allowedTools`). Enforces the `assertContentFree` egress firewall on every outbound request to `generativelanguage.googleapis.com` (`store: false`) and signs a canonical egress receipt (`{ sha256, epochHourSec, kind: "gemini-egress" }`) with the enclave-generated `egress-signing` Ed25519 key.
+3. **Transparency log tree-head signer (`POST /transparency/sign-tree-head`, internal / operator-authenticated)**: Not exposed on the public `shim.paths`. Requires a constant-time Bearer token matching `CORE_OPERATOR_TOKEN` (fails closed when unset) and recomputes the RFC 6962 Merkle root directly from `drouter.transparency_log` in MongoDB to verify `(treeSize, rootHash)` before signing with `tree-signing`.
+4. **Attested public key discovery (`GET /keys` and `GET /health`)**: Exposes the raw 32-byte hex and 44-byte RFC 8410 SPKI DER hex public keys for `egress-signing` and `tree-signing`, plus `publicKeysSha256` (`sha256(canonicalJson({ egress, tree }))`), so clients can cross-check them against Tinfoil `crypto_material` (`https://tinfoil.sh/key/spki/v1`) or a platform attestation report (Google Confidential Space token nonce or Intel TDX `report_data`).
 
-## Attested keys
+## Attested keys and explicit `CORE_KEY_SOURCE`
 
-At enclave boot, the Tinfoil CVM generates two Ed25519 key pairs inside hardware-encrypted memory and mounts them read-only at `/run/tinfoil/keys/<id>/`:
+`deroute-core` requires an explicit, platform-neutral `CORE_KEY_SOURCE` environment variable and refuses to start if it is missing or unknown:
 
-- `egress-signing` (`ed25519`): Signs the canonical SHA-256 receipt of every outbound Gemini control-plane request.
-- `tree-signing` (`ed25519`): Signs deRoute transparency log Merkle tree heads.
+- `CORE_KEY_SOURCE=tinfoil` (configured in `tinfoil-config.yml`): Loads the two Ed25519 key pairs generated at enclave boot by the Tinfoil CVM and mounted read-only at `/run/tinfoil/keys/<id>/`:
+  - `egress-signing` (`ed25519`): Signs the canonical SHA-256 receipt of every outbound Gemini control-plane request.
+  - `tree-signing` (`ed25519`): Signs verified deRoute transparency log Merkle tree heads.
+- `CORE_KEY_SOURCE=boot`: Generates both Ed25519 key pairs in memory at boot (never written to disk) and exposes `publicKeysSha256` (`sha256(canonicalJson({ egress, tree }))`) on `GET /keys` so a platform attestation quote can bind them.
 
-Neither private key ever leaves the enclave. Their public keys are endorsed directly in the hardware-backed attestation document under `crypto_material`.
+Neither private key ever leaves the enclave.
 
 ## Egress allowlist (`core-egress`)
 
-Outbound traffic from the enclave is blocked by default and restricted by the `core-egress` allowlist network to:
+Outbound traffic from the enclave is blocked by default and restricted by the `core-egress` allowlist network to the 5 hosts the service actually contacts:
 
-- **MongoDB Atlas (`drouter.enclave_intelligence`)**:
+- **MongoDB Atlas (`drouter.enclave_intelligence` and `drouter.transparency_log`)**:
   - `drouter.0mvrm0i.mongodb.net`
   - `ac-cdskmit-shard-00-00.0mvrm0i.mongodb.net`
   - `ac-cdskmit-shard-00-01.0mvrm0i.mongodb.net`
   - `ac-cdskmit-shard-00-02.0mvrm0i.mongodb.net`
 - **Google Gemini Interactions API**:
   - `generativelanguage.googleapis.com`
-- **Tinfoil, Sigstore, GitHub, and AMD KDS verification endpoints**:
-  - `atc.tinfoil.sh`
-  - `router-0.tinfoil.sh`
-  - `inference.tinfoil.sh`
-  - `api.tinfoil.sh`
-  - `github-proxy.tinfoil.sh`
-  - `kds-proxy.tinfoil.sh`
-  - `rekor.sigstore.dev`
-  - `log2025-1.rekor.sigstore.dev`
-  - `fulcio.sigstore.dev`
-  - `timestamp.sigstore.dev`
-  - `api.github.com`
-  - `github.com`
-  - `objects.githubusercontent.com`
-  - `release-assets.githubusercontent.com`
-  - `kdsintf.amd.com`
+
+## Secrets
+
+- `MONGODB_URI`: MongoDB Atlas connection string for reading `drouter.enclave_intelligence` and verifying `drouter.transparency_log`.
+- `GEMINI_API_KEY`: Google Gemini API key used exclusively for content-free control-plane planning (`POST /agent/plan`).
+- `CORE_OPERATOR_TOKEN`: Constant-time Bearer token required by `POST /transparency/sign-tree-head`.
 
 ## How browsers verify this enclave
 
