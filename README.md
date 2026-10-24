@@ -1,42 +1,84 @@
-# Tinfoil Containers Template
+# deroute-core-config
 
-A GitHub template repository for deploying a pre-built Docker image as a [Tinfoil Container](https://docs.tinfoil.sh/containers/overview) (in a secure enclave)
+Public [Tinfoil Containers](https://docs.tinfoil.sh/containers/overview) configuration and measured-release repository for **deroute-core**, the attested enclave backend of [deRoute](https://drouter-demo.vercel.app).
 
-Out of the box, this template deploys [`tinfoil-containers-hello-world`](https://github.com/tinfoilsh/tinfoil-containers-hello-world): a tiny HTTP server that reads a `MESSAGE` env var and a `GREETING_TOKEN` secret, and responds with both.
+Every release in this repository is measured by Tinfoil's GitHub Actions workflow (`tinfoil-release.yml` -> `tinfoil-release-publish.yml`) and recorded in the public Sigstore Rekor transparency log so any browser or independent verifier can verify the exact container image digest, hardware measurement, network egress allowlist, and attested Ed25519 signing keys before sending a request.
 
-## Deploy It
+## What runs in this enclave
 
-1. Click **[Use this template](https://github.com/tinfoilsh/tinfoil-containers-template/generate)** → **Create a new repository**
-2. In the [Tinfoil Dashboard](https://dash.tinfoil.sh), open the **Secrets** tab and add `GREETING_TOKEN` with any value
-3. Release a version by running the **Tinfoil Release** workflow:
-   - **CLI:** `gh workflow run tinfoil-release.yml -f version=v0.0.1`
-   - **UI:** **Actions** tab → **Tinfoil Release** → **Run workflow**, then enter the version
-4. **Containers** → **Deploy**, select your repo and tag, and click **Deploy**
+The `tinfoil-config.yml` file in this repository declares a single stateless container (`deroute-core`) running on an attested Confidential VM (`cvm-version: 0.14.7`, 2 vCPUs, 8192 MB RAM) with a read-only root filesystem (`read_only: true`, `/tmp` tmpfs only):
 
-Once running, `curl https://<container-name>.<org>.containers.tinfoil.dev` returns:
+1. **Whole-library knowledge retrieval (`GET /knowledge/corpus`)**: Returns the entire public confidential-computing knowledge base (`drouter.enclave_intelligence`) with 768-dimensional embeddings and a canonical SHA-256 digest (`contentSha256`). Accepts zero query parameters so MongoDB Atlas never learns what any user is looking for.
+2. **Content-free Gemini control-plane planner (`POST /agent/plan`)**: Accepts only a bucketed `TaskDescriptor` (`taskKind`, `$INPUT` handle, power-of-two `inputTokenEstimate`, `redactionCounts` capped at 5 per category, boolean `verification` flags, and `allowedTools`). Enforces the `assertContentFree` egress firewall on every outbound request to `generativelanguage.googleapis.com` and signs a canonical egress receipt (`{ sha256, epochHourSec, kind: "gemini-egress" }`) with the enclave-generated `egress-signing` Ed25519 key.
+3. **Transparency log tree-head signer (`POST /transparency/sign-tree-head`)**: Signs well-formed RFC 6962 Merkle tree heads (`drouter/transparency/sth/v1`) with the enclave-generated `tree-signing` Ed25519 key.
+4. **Attested public key discovery (`GET /keys` and `GET /health`)**: Exposes the raw 32-byte hex and 44-byte RFC 8410 SPKI DER hex public keys for `egress-signing` and `tree-signing` so clients can cross-check them against the enclave attestation document's `crypto_material` entries (`https://tinfoil.sh/key/spki/v1`).
 
+## Attested keys
+
+At enclave boot, the Tinfoil CVM generates two Ed25519 key pairs inside hardware-encrypted memory and mounts them read-only at `/run/tinfoil/keys/<id>/`:
+
+- `egress-signing` (`ed25519`): Signs the canonical SHA-256 receipt of every outbound Gemini control-plane request.
+- `tree-signing` (`ed25519`): Signs deRoute transparency log Merkle tree heads.
+
+Neither private key ever leaves the enclave. Their public keys are endorsed directly in the hardware-backed attestation document under `crypto_material`.
+
+## Egress allowlist (`core-egress`)
+
+Outbound traffic from the enclave is blocked by default and restricted by the `core-egress` allowlist network to:
+
+- **MongoDB Atlas (`drouter.enclave_intelligence`)**:
+  - `drouter.0mvrm0i.mongodb.net`
+  - `ac-cdskmit-shard-00-00.0mvrm0i.mongodb.net`
+  - `ac-cdskmit-shard-00-01.0mvrm0i.mongodb.net`
+  - `ac-cdskmit-shard-00-02.0mvrm0i.mongodb.net`
+- **Google Gemini Interactions API**:
+  - `generativelanguage.googleapis.com`
+- **Tinfoil, Sigstore, GitHub, and AMD KDS verification endpoints**:
+  - `atc.tinfoil.sh`
+  - `router-0.tinfoil.sh`
+  - `inference.tinfoil.sh`
+  - `api.tinfoil.sh`
+  - `github-proxy.tinfoil.sh`
+  - `kds-proxy.tinfoil.sh`
+  - `rekor.sigstore.dev`
+  - `log2025-1.rekor.sigstore.dev`
+  - `fulcio.sigstore.dev`
+  - `timestamp.sigstore.dev`
+  - `api.github.com`
+  - `github.com`
+  - `objects.githubusercontent.com`
+  - `release-assets.githubusercontent.com`
+  - `kdsintf.amd.com`
+
+## How browsers verify this enclave
+
+Browsers connect using `SecureClient` from the [`tinfoil`](https://www.npmjs.com/package/tinfoil) SDK:
+
+```ts
+import { SecureClient } from "tinfoil";
+
+const client = new SecureClient({
+  enclaveURL: "https://<instance>.<org>.containers.tinfoil.dev",
+  configRepo: "thepigdestroyer/deroute-core-config",
+});
+
+await client.ready();
+const verificationDoc = await client.getVerificationDocument();
 ```
-MESSAGE: <value from tinfoil-config.yml>
-GREETING_TOKEN: <present if secret exists>
-```
 
-## Use your own image
+Before sending any request, `SecureClient`:
 
-1. If you have a prebuilt image, edit `tinfoil-config.yml` to point at the image you want to deploy: change `image:` to your `<repo>@sha256:<digest>`, adjust `env`/`secrets`/`shim` for your container, then release a new version.
-2. If you have your own code in a private repo, [`tinfoil-containers-hello-world`](https://github.com/tinfoilsh/tinfoil-containers-hello-world) shows the build-and-publish side and can be added to an existing repository.
-3. If you have your own code in a public repo, use the simple [`tinfoil-public-containers-template`](https://github.com/tinfoilsh/tinfoil-public-containers-template) for an all-in-one-repo example. Since the `tinfoil-config.yml` has to be public, public app code can live in the same repo as the config.
+1. Fetches the hardware attestation quote from the enclave and verifies the AMD SEV-SNP / Intel TDX signature chain back to the silicon vendor root.
+2. Fetches the latest signed release from `thepigdestroyer/deroute-core-config` and verifies its Sigstore Rekor transparency log inclusion proof.
+3. Confirms the running enclave measurement matches the measured `tinfoil-config.yml` and pinned `ghcr.io/thepigdestroyer/deroute-core@sha256:...` image digest.
+4. Binds TLS / HPKE keys and `crypto_material` (`egress-signing` and `tree-signing` SPKI public keys) to the verified enclave report.
 
-## Updating
+## Releasing a new version
 
-Edit `tinfoil-config.yml`, commit, then release a new version (`gh workflow run tinfoil-release.yml -f version=v0.0.2`, or via the **Actions** tab). Then click **Update** in the dashboard. Each release creates an auditable record in the Sigstore transparency log.
-
-## Documentation
-
-For the full configuration reference, secrets management, debug mode, and more:
-
-**[docs.tinfoil.sh/containers](https://docs.tinfoil.sh/containers/overview)**
-
-## Support
-
-- [Documentation](https://docs.tinfoil.sh)
-- [Email Support](mailto:contact@tinfoil.sh)
+1. Build and push `ghcr.io/thepigdestroyer/deroute-core` via `.github/workflows/core-image.yml` in the `drouter-demo` repository.
+2. Copy the resulting `sha256:<digest>` into `tinfoil-config.yml` in this repository and commit to `main`.
+3. Trigger the **Tinfoil Release** workflow:
+   ```bash
+   gh workflow run tinfoil-release.yml -f version=v0.0.1
+   ```
+4. Once `tinfoil-release-publish.yml` finishes publishing the signed measurement to GitHub Releases and Sigstore Rekor, deploy or update the container in the Tinfoil dashboard.

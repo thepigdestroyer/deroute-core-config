@@ -1,18 +1,78 @@
-# Tinfoil Container Configuration
-# For updates: edit this file, commit, run the workflow (e.g., v0.0.2)
+# Tinfoil Container Configuration for deroute-core
+# For updates: edit this file, commit, and run the Tinfoil Release workflow.
 cvm-version: 0.14.7
 cpus: 2
 memory: 8192
 
+attested-keys:
+  - id: egress-signing
+    key: ed25519
+    uid: 1000
+    gid: 1000
+  - id: tree-signing
+    key: ed25519
+    uid: 1000
+    gid: 1000
+
+networks:
+  core-egress:
+    egress: allowlist
+    allow:
+      # MongoDB Atlas cluster SRV & replica set shard hosts (from dns.resolveSrv on _mongodb._tcp.drouter.0mvrm0i.mongodb.net)
+      - drouter.0mvrm0i.mongodb.net
+      - ac-cdskmit-shard-00-00.0mvrm0i.mongodb.net
+      - ac-cdskmit-shard-00-01.0mvrm0i.mongodb.net
+      - ac-cdskmit-shard-00-02.0mvrm0i.mongodb.net
+      # Google Gemini Interactions API (@google/genai control plane)
+      - generativelanguage.googleapis.com
+      # Tinfoil attestation, confidential router, and verifier proxy endpoints
+      - atc.tinfoil.sh
+      - router-0.tinfoil.sh
+      - inference.tinfoil.sh
+      - api.tinfoil.sh
+      - github-proxy.tinfoil.sh
+      - kds-proxy.tinfoil.sh
+      # Sigstore Rekor, Fulcio, TSA, GitHub release assets, and AMD KDS
+      - rekor.sigstore.dev
+      - log2025-1.rekor.sigstore.dev
+      - fulcio.sigstore.dev
+      - timestamp.sigstore.dev
+      - api.github.com
+      - github.com
+      - objects.githubusercontent.com
+      - release-assets.githubusercontent.com
+      - kdsintf.amd.com
+
 containers:
-  - name: "hello-world"
-    image: "ghcr.io/tinfoilsh/tinfoil-containers-hello-world@sha256:c943b1cab16409e2e686ad71deab30364c27421852cdd6b3080df1c7a38331ed"
+  - name: "deroute-core"
+    image: "ghcr.io/thepigdestroyer/deroute-core@sha256:d8863b35ffae5ff0ff99af26d07ba78648ef67138a5316cfc9c66bf55abc6fca"
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      /tmp: "size=64m"
     env:
-      - MESSAGE: "Hello from Tinfoil"
+      - NODE_ENV: "production"
+      - PORT: "8080"
+      - HOST: "0.0.0.0"
+      - MONGODB_DB: "drouter"
     secrets:
-      - GREETING_TOKEN
+      - MONGODB_URI
+      - GEMINI_API_KEY
+      - TINFOIL_API_KEY
+    keys:
+      - egress-signing
+      - tree-signing
+    networks:
+      - core-egress
 
 shim:
   upstream-port: 8080
   paths:
-    - /*
+    - /health
+    - /knowledge/corpus
+    - /agent/plan
+    - /transparency/sign-tree-head
+    - /keys
+  origins:
+    - https://drouter-demo.vercel.app
+    - http://localhost:3000
